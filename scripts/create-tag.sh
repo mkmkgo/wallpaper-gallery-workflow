@@ -92,7 +92,7 @@ main() {
         exit 0
     fi
 
-    # 计算新版本号
+    # 计算新版本号（patch 满 100 进位 minor，minor 满 10 进位 major）
     local new_tag=""
     if [ -z "$latest_tag" ]; then
         new_tag="v1.0.1"
@@ -100,6 +100,14 @@ main() {
         local version=${latest_tag#v}
         IFS='.' read -r major minor patch <<< "$version"
         local new_patch=$((patch + 1))
+        if [ "$new_patch" -ge 100 ]; then
+            new_patch=0
+            minor=$((minor + 1))
+        fi
+        if [ "$minor" -ge 10 ]; then
+            minor=0
+            major=$((major + 1))
+        fi
         new_tag="v${major}.${minor}.${new_patch}"
     fi
 
