@@ -111,7 +111,7 @@ get_new_images_by_scan() {
             if [ ! -f "$thumb_path" ]; then
                 echo "wallpaper/$series/$rel_path"
             fi
-        done < <(find "$wallpaper_dir" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \) -print0)
+        done < <(find "$wallpaper_dir" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.webp" \) -print0)
     done
 }
 

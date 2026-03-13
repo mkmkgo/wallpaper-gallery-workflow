@@ -151,7 +151,7 @@ check_orphan_originals() {
                     echo -e "   ${YELLOW}⚠️  需要手动处理或重新运行工作流${NC}"
                 fi
             fi
-        done < <(find "$wallpaper_dir" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \) -print0)
+        done < <(find "$wallpaper_dir" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.webp" \) -print0)
     done
 
     ORPHAN_ORIGINALS=$count

@@ -97,7 +97,7 @@ main() {
                 missing_files+=("$key")
                 missing_count=$((missing_count + 1))
             fi
-        done < <(find "$wallpaper_dir" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \) -print0)
+        done < <(find "$wallpaper_dir" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.webp" \) -print0)
     done
     
     if [ $missing_count -gt 0 ]; then
