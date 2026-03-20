@@ -32,6 +32,10 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+format_datetime() {
+    date '+%Y-%m-%d %H:%M:%S'
+}
+
 main() {
     local project_root="${1:-.}"
     local target_tag="${2:-}"
@@ -164,6 +168,8 @@ main() {
     local desktop_count=$(grep '^desktop|' "$timestamp_file" 2>/dev/null | wc -l | tr -d ' ')
     local mobile_count=$(grep '^mobile|' "$timestamp_file" 2>/dev/null | wc -l | tr -d ' ')
     local avatar_count=$(grep '^avatar|' "$timestamp_file" 2>/dev/null | wc -l | tr -d ' ')
+    local last_updated
+    last_updated=$(format_datetime)
 
     if command -v jq &>/dev/null; then
         # 更新总数，移除该 tag 的 release 记录
@@ -171,8 +177,9 @@ main() {
            --argjson desktop "$desktop_count" \
            --argjson mobile "$mobile_count" \
            --argjson avatar "$avatar_count" \
+           --arg last_updated "$last_updated" \
            '.total = {"desktop": $desktop, "mobile": $mobile, "avatar": $avatar} | 
-            .lastUpdated = now | 
+            .lastUpdated = $last_updated | 
             .releases = [.releases[] | select(.tag != $tag)]' \
            "$stats_file" > "${stats_file}.tmp" && mv "${stats_file}.tmp" "$stats_file"
     elif command -v node &>/dev/null; then
@@ -180,7 +187,7 @@ main() {
 const fs = require('fs');
 const stats = JSON.parse(fs.readFileSync('$stats_file', 'utf8'));
 stats.total = { desktop: $desktop_count, mobile: $mobile_count, avatar: $avatar_count };
-stats.lastUpdated = new Date().toISOString();
+stats.lastUpdated = '$last_updated';
 stats.releases = (stats.releases || []).filter(r => r.tag !== '$target_tag');
 fs.writeFileSync('$stats_file', JSON.stringify(stats, null, 2));
 "

@@ -25,6 +25,10 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+format_datetime() {
+    date '+%Y-%m-%d %H:%M:%S'
+}
+
 # 更新 stats.json
 update_stats() {
     local stats_file="$1"
@@ -37,6 +41,8 @@ update_stats() {
     local added_avatar="$8"
     local today="$9"
     local publisher="${10}"
+    local last_updated
+    last_updated=$(format_datetime)
 
     # 如果 stats.json 不存在，创建初始结构
     if [ ! -f "$stats_file" ]; then
@@ -51,14 +57,15 @@ update_stats() {
            --argjson desktop "$desktop_count" \
            --argjson mobile "$mobile_count" \
            --argjson avatar "$avatar_count" \
-           '.total = {"desktop": $desktop, "mobile": $mobile, "avatar": $avatar} | .lastUpdated = now | .releases = [$release] + .releases' \
+           --arg last_updated "$last_updated" \
+           '.total = {"desktop": $desktop, "mobile": $mobile, "avatar": $avatar} | .lastUpdated = $last_updated | .releases = [$release] + .releases' \
            "$stats_file" > "${stats_file}.tmp" && mv "${stats_file}.tmp" "$stats_file"
     elif command -v node &>/dev/null; then
         node -e "
 const fs = require('fs');
 const stats = JSON.parse(fs.readFileSync('$stats_file', 'utf8'));
 stats.total = { desktop: $desktop_count, mobile: $mobile_count, avatar: $avatar_count };
-stats.lastUpdated = new Date().toISOString();
+stats.lastUpdated = '$last_updated';
 stats.releases = [
   { tag: '$new_tag', date: '$today', added: { desktop: $added_desktop, mobile: $added_mobile, avatar: $added_avatar }, publisher: '$publisher' },
   ...(stats.releases || [])
