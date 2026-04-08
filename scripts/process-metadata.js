@@ -162,6 +162,75 @@ function getImageInfo(relativePath) {
   return { resolution, size }
 }
 
+function findActualImagePath(expectedRelativePath) {
+  const expectedPath = path.join(imageRepoRoot, expectedRelativePath)
+  if (fs.existsSync(expectedPath)) {
+    return expectedRelativePath
+  }
+
+  const parts = expectedRelativePath.split('/')
+  if (parts.length < 4) {
+    return expectedRelativePath
+  }
+
+  const series = parts[1]
+  const filename = parts[parts.length - 1]
+  const seriesRoot = path.join(imageRepoRoot, 'wallpaper', series)
+  if (!fs.existsSync(seriesRoot)) {
+    return expectedRelativePath
+  }
+
+  const stack = [seriesRoot]
+  while (stack.length > 0) {
+    const currentDir = stack.pop()
+    const entries = fs.readdirSync(currentDir, { withFileTypes: true })
+
+    for (const entry of entries) {
+      const fullPath = path.join(currentDir, entry.name)
+      if (entry.isDirectory()) {
+        stack.push(fullPath)
+        continue
+      }
+
+      if (entry.isFile() && entry.name === filename) {
+        return path.relative(imageRepoRoot, fullPath).replace(/\\/g, '/')
+      }
+    }
+  }
+
+  return expectedRelativePath
+}
+
+function reconcileMetadataImagePath(relativePath, imageData) {
+  const actualRelativePath = findActualImagePath(relativePath)
+  const absolutePath = path.join(imageRepoRoot, actualRelativePath)
+
+  if (!fs.existsSync(absolutePath)) {
+    return { relativePath, imageData, changed: false, missing: true }
+  }
+
+  if (actualRelativePath === relativePath) {
+    return { relativePath, imageData, changed: false, missing: false }
+  }
+
+  const pathParts = actualRelativePath.split('/')
+  const filename = pathParts[pathParts.length - 1]
+  const category = pathParts[2] || imageData.category || '未分类'
+  const subcategory = pathParts.length > 4 ? pathParts[3] : ''
+
+  return {
+    relativePath: actualRelativePath,
+    imageData: {
+      ...imageData,
+      category,
+      subcategory,
+      filename,
+    },
+    changed: true,
+    missing: false,
+  }
+}
+
 // 读取或初始化 metadata JSON
 function loadMetadata(filePath) {
   if (fs.existsSync(filePath)) {
@@ -326,6 +395,17 @@ function generateFrontendData(metadataMap, dataDir, newTag) {
     // 将 metadata 转换为前端需要的数组格式
     const wallpapers = []
     let index = 0
+
+    const reconciledImages = {}
+    for (const [relativePath, data] of Object.entries(metadata.images)) {
+      const reconciled = reconcileMetadataImagePath(relativePath, data)
+      if (reconciled.missing) {
+        console.warn(`  跳过缺失原图: ${relativePath}`)
+        continue
+      }
+      reconciledImages[reconciled.relativePath] = reconciled.imageData
+    }
+    metadata.images = reconciledImages
 
     for (const [relativePath, data] of Object.entries(metadata.images)) {
       // 解析路径获取前端需要的格式
@@ -651,6 +731,11 @@ async function main() {
       console.log('强制重新生成前端数据（metadata 可能已更新）...')
     }
 
+    // 生成前端数据
+    console.log()
+    console.log('生成前端数据...')
+    generateFrontendData(metadataMap, dataDir, newTag)
+
     console.log()
     console.log('保存 metadata...')
     for (const [series, metadata] of Object.entries(metadataMap)) {
@@ -658,11 +743,6 @@ async function main() {
       saveMetadata(metaFile, metadata)
       console.log(`  保存 ${series}.json (${metadata.count} 张)`)
     }
-
-    // 生成前端数据
-    console.log()
-    console.log('生成前端数据...')
-    generateFrontendData(metadataMap, dataDir, newTag)
   }
 
   // 输出处理数量
@@ -755,7 +835,15 @@ function extractKeywordsFromFilename(filename) {
   return [...new Set(parts)]
 }
 
-main().catch(e => {
-  console.error('执行失败:', e)
-  process.exit(1)
-})
+module.exports = {
+  findActualImagePath,
+  generateFrontendData,
+  reconcileMetadataImagePath,
+}
+
+if (require.main === module) {
+  main().catch(e => {
+    console.error('执行失败:', e)
+    process.exit(1)
+  })
+}
