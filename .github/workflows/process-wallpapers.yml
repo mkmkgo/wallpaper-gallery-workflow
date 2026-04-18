@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: false  # 不取消正在运行的，排队执行
 
 env:
-  IMAGE_REPO: IT-NuanxinPro/nuanXinProPic
+  IMAGE_REPO: mkmkgo/nuanXinProPic
 
 jobs:
   process:
