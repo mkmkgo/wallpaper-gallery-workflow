@@ -91,6 +91,15 @@ jobs:
           # 第一步：提交缩略图/预览图，创建并推送 tag
           ./scripts/create-tag.sh nuanXinProPic "$MSG"
 
+
+      - name: Warmup CDN cache for new images
+        if: steps.process.outputs.has_new == 'true'
+        run: |
+          NEW_TAG=$(cat /tmp/new_tag.txt)
+          node scripts/warmup-cdn-images.js
+        env:
+          CDN_VERSION: $NEW_TAG
+          IMAGE_REPO_PATH: ./nuanXinProPic
       - name: Update timestamps
         if: steps.process.outputs.has_new == 'true'
         run: |
