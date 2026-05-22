@@ -181,3 +181,16 @@ jobs:
           if [ "${{ steps.process.outputs.has_new }}" == "true" ] || [ "${{ steps.metadata.outputs.has_metadata }}" == "true" ]; then
             echo "- ✅ Created release" >> $GITHUB_STEP_SUMMARY
           fi
+
+      - name: Trigger nuanXinProPic sync
+        if: steps.process.outputs.has_new == 'true' || steps.metadata.outputs.has_metadata == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.REPO_TOKEN }}
+        run: |
+          echo "🔄 Triggering nuanXinProPic Sync All Wallpapers..."
+          curl -s -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/mkmkgo/nuanXinProPic/dispatches \
+            -d '{"event_type":"sync-wallpapers"}'
+          echo "✅ Dispatch event sent to nuanXinProPic"
