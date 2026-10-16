@@ -11,7 +11,7 @@ on:
         default: ''
 
 env:
-  IMAGE_REPO: IT-NuanxinPro/nuanXinProPic
+  IMAGE_REPO: mkmkgo/nuanXinProPic
 
 jobs:
   rollback:
