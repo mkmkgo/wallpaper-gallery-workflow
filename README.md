@@ -106,7 +106,7 @@ wallpaper-gallery-workflow/
 curl -X POST \
   -H "Authorization: token YOUR_PAT_TOKEN" \
   -H "Accept: application/vnd.github.v3+json" \
-  https://api.github.com/repos/IT-NuanxinPro/wallpaper-gallery-workflow/dispatches \
+  https://api.github.com/repos/mkmkgo/wallpaper-gallery-workflow/dispatches \
   -d '{"event_type":"process-wallpapers","client_payload":{"message":"feat: 新增壁纸","publisher":"username"}}'
 ```
 
@@ -142,7 +142,7 @@ curl -X POST \
 
 ```bash
 # 克隆图床仓库
-git clone https://github.com/IT-NuanxinPro/nuanXinProPic.git
+git clone https://github.com/mkmkgo/nuanXinProPic.git
 
 # 处理新图片
 ./scripts/process-new-images.sh nuanXinProPic
@@ -155,7 +155,7 @@ git clone https://github.com/IT-NuanxinPro/nuanXinProPic.git
 
 | 项目 | 说明 |
 |------|------|
-| [nuanXinProPic](https://github.com/IT-NuanxinPro/nuanXinProPic) | 壁纸图床仓库 |
+| [nuanXinProPic](https://github.com/mkmkgo/nuanXinProPic) | 壁纸图床仓库 |
 | wallpaper-gallery | 前端展示网站 |
 | wallpaper-gallery-upload | 上传管理系统 |
 

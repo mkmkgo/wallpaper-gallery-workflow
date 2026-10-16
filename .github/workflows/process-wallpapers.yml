@@ -41,9 +41,19 @@ jobs:
       
       - name: Install dependencies
         run: |
-          # ImageMagick
-          sudo apt-get update
-          sudo apt-get install -y imagemagick fonts-noto-cjk
+          # 按需安装 ImageMagick / CJK 字体（部分 runner 未预装）；
+          # 跳过 apt-get update（默认 azure 镜像源不稳定时，update 会因超时重试卡几分钟），
+          # runner 自带包列表缓存通常可直接安装，失败再回退 update。
+          MISSING=""
+          command -v magick >/dev/null 2>&1 || command -v convert >/dev/null 2>&1 || MISSING="imagemagick"
+          dpkg -s fonts-noto-cjk >/dev/null 2>&1 || MISSING="$MISSING fonts-noto-cjk"
+          if [ -n "$MISSING" ]; then
+            echo "安装缺失依赖:$MISSING"
+            sudo apt-get install -y $MISSING || {
+              sudo apt-get update && sudo apt-get install -y $MISSING
+            }
+          fi
+          (command -v magick && magick -version | head -1) || convert -version | head -1
           
           # 配置 ImageMagick 策略
           sudo sed -i 's/<policy domain="resource" name="memory" value="256MiB"\/>/<policy domain="resource" name="memory" value="2GiB"\/>/g' /etc/ImageMagick-6/policy.xml || true
