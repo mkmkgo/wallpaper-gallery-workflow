@@ -168,12 +168,25 @@ $commit_msg
 ---
 *自动发布 by GitHub Actions*"
 
-        gh release create "$new_tag" \
-            --title "$new_tag" \
-            --notes "$body" \
-            --latest
+        # [LOCAL] tag 复用场景：
+        # create-tag.sh 在「仅数据类改动」时不递增 v* tag，会复用现有 tag。
+        # 此时该 tag 的 Release 可能已存在，直接 gh release create 会因重名报错
+        # 并中断工作流，所以先探测，已存在则改用 edit 更新说明。
+        if gh release view "$new_tag" >/dev/null 2>&1; then
+            echo -e "${YELLOW}🔄 Release ${new_tag} 已存在（数据类更新复用 tag），改为更新已有 Release${NC}"
+            gh release edit "$new_tag" \
+                --title "$new_tag" \
+                --notes "$body"
 
-        echo -e "${GREEN}✅ Release 创建成功${NC}"
+            echo -e "${GREEN}✅ Release 更新成功${NC}"
+        else
+            gh release create "$new_tag" \
+                --title "$new_tag" \
+                --notes "$body" \
+                --latest
+
+            echo -e "${GREEN}✅ Release 创建成功${NC}"
+        fi
     else
         echo -e "${YELLOW}⚠️  跳过 Release 创建（未配置 gh CLI 或 GH_TOKEN）${NC}"
     fi

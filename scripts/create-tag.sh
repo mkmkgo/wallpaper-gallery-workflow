@@ -51,6 +51,35 @@ main() {
         has_changes=true
     fi
 
+    # ---------------------------------------------------------
+    # [LOCAL] 图片版本号只在图片文件真变时才递增
+    #
+    # 背景：图片 URL 形如 .../nuanXinProPic@<tag>/...，tag 一变，
+    # 全站每一个图片 URL 都变，整个 CDN 缓存随之作废，所有图片
+    # 回到冷启动（实测 MISS≈3s / HIT≈0.04s，差 70~90 倍）。
+    # 而 stats.json / data / metadata 每天都在变，导致 tag 一天一个。
+    #
+    # 修法：只有当 wallpaper/ thumbnail/ preview/ 下有改动时才创建新
+    # v* tag；仅数据类文件变化时复用现有 tag，图片 URL 保持不变。
+    # ---------------------------------------------------------
+    local changed_files
+    changed_files=$(
+        {
+            git -c core.quotePath=false diff HEAD --name-only
+            git -c core.quotePath=false ls-files --others --exclude-standard
+        } 2>/dev/null | sort -u
+    )
+    local has_image_changes=false
+    if printf '%s\n' "${changed_files}" | grep -qE '^(wallpaper|thumbnail|preview)/'; then
+        has_image_changes=true
+    fi
+
+    echo -e "${BLUE}本次改动是否含图片文件: ${has_image_changes}${NC}"
+    if [ "$has_changes" = true ] && [ "$has_image_changes" = false ]; then
+        echo -e "${BLUE}改动明细（前 10 条）:${NC}"
+        printf '%s\n' "${changed_files}" | head -10 | sed 's/^/    /'
+    fi
+
     # 2. 检查当前 HEAD commit 是否已有 tag（工作流中断恢复场景）
     local existing_tag=$(git tag --points-at HEAD | grep '^v' | head -1)
 
@@ -90,6 +119,33 @@ main() {
     if [ "$has_changes" = false ]; then
         echo -e "${YELLOW}没有检测到更改，无需创建 tag${NC}"
         exit 0
+    fi
+
+    # ---------------------------------------------------------
+    # [LOCAL] 仅数据类改动：照常提交推送，但不递增图片版本号
+    #
+    # 不创建新 v* tag，而是复用 latest_tag 写回 /tmp/new_tag.txt，
+    # 保证下游步骤（update-timestamps / verify-timestamps /
+    # process-metadata / publish-release）拿到的仍是有效 tag。
+    # ---------------------------------------------------------
+    if [ "$has_image_changes" = false ] && [ -n "$latest_tag" ]; then
+        echo ""
+        echo -e "${YELLOW}本次仅为数据类改动（不含 wallpaper/thumbnail/preview），复用现有 tag: ${latest_tag}${NC}"
+        echo -e "${YELLOW}图片 URL 保持不变，CDN 缓存不会因本次发版整体失效${NC}"
+        echo ""
+
+        echo -e "${BLUE}📥 提交更改（不创建新 tag）...${NC}"
+        git add .
+        git commit -m "$commit_msg"
+
+        echo -e "${BLUE}🚀 推送到远程...${NC}"
+        git push
+
+        echo ""
+        echo -e "${GREEN}✅ 数据更新已提交，图片版本保持: ${latest_tag}${NC}"
+
+        echo "$latest_tag" > /tmp/new_tag.txt
+        return 0
     fi
 
     # 计算新版本号（patch 满 100 进位 minor，minor 满 10 进位 major）
