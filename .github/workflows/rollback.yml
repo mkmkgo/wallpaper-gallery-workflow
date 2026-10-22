@@ -2,33 +2,80 @@ name: Rollback Release
 
 on:
   repository_dispatch:
-    types: [rollback-release]
+    types:
+      - rollback-release
+      - rollback-release-desktop
+      # 新增分仓的回滚：这里加一行 dispatch type，再到「Resolve shard config」加一个 case
   workflow_dispatch:
     inputs:
+      shard:
+        description: '分片 ID（main / desktop）'
+        required: false
+        default: 'main'
       tag:
         description: '要回滚的 tag（留空则回滚最新版本）'
         required: false
         default: ''
 
-env:
-  IMAGE_REPO: mkmkgo/nuanXinProPic
+# 按分片分组：不同分仓可并行，同一分仓串行排队
+concurrency:
+  group: rollback-${{ github.event.action || github.event.inputs.shard || 'main' }}
+  cancel-in-progress: false
 
 jobs:
   rollback:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout workflow repo
         uses: actions/checkout@v4
-      
+
+      - name: Resolve shard config
+        id: shard
+        run: |
+          SHARD="${{ github.event.action || github.event.inputs.shard }}"
+          echo "🔀 Shard: $SHARD"
+
+          # 与 process-wallpapers.yml 保持一致的目录约定
+          REPO_DIR="images"
+
+          case "$SHARD" in
+            rollback-release|main)
+              REPO_SLUG="mkmkgo/nuanXinProPic"
+              SHARD_LABEL="主仓"
+              ;;
+            rollback-release-desktop|desktop)
+              REPO_SLUG="mkmkgo/nuanXinProPic-desktop"
+              SHARD_LABEL="桌面壁纸仓"
+              ;;
+            *)
+              echo "❌ Unknown shard: $SHARD" >&2
+              exit 1
+              ;;
+          esac
+
+          {
+            echo "REPO_SLUG=$REPO_SLUG"
+            echo "REPO_DIR=$REPO_DIR"
+            echo "SHARD_LABEL=$SHARD_LABEL"
+          } >> "$GITHUB_ENV"
+
+          {
+            echo "repo_slug=$REPO_SLUG"
+            echo "repo_dir=$REPO_DIR"
+            echo "shard_label=$SHARD_LABEL"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "✅ $SHARD_LABEL → $REPO_SLUG (dir: $REPO_DIR)"
+
       - name: Checkout image repo
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.IMAGE_REPO }}
+          repository: ${{ steps.shard.outputs.repo_slug }}
           token: ${{ secrets.REPO_TOKEN }}
-          path: nuanXinProPic
+          path: ${{ steps.shard.outputs.repo_dir }}
           fetch-depth: 0
-      
+
       - name: Get tag to rollback
         id: get_tag
         run: |
@@ -39,21 +86,21 @@ jobs:
             TAG="${{ github.event.client_payload.tag }}"
           else
             # 获取最新 tag
-            cd nuanXinProPic
+            cd "$REPO_DIR"
             TAG=$(git tag -l 'v*' --sort=-version:refname | head -1)
             cd ..
           fi
-          
+
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "🎯 Will rollback: $TAG"
-      
+
       - name: Rollback
         env:
           GH_TOKEN: ${{ secrets.REPO_TOKEN }}
         run: |
           chmod +x scripts/*.sh
-          ./scripts/rollback.sh nuanXinProPic "${{ steps.get_tag.outputs.tag }}"
-      
+          ./scripts/rollback.sh "$REPO_DIR" "${{ steps.get_tag.outputs.tag }}"
+
       - name: Read rollback result
         id: result
         run: |
@@ -61,10 +108,10 @@ jobs:
             PREV_TAG=$(cat /tmp/rollback_result.txt)
             echo "previous_tag=$PREV_TAG" >> $GITHUB_OUTPUT
           fi
-      
+
       - name: Summary
         run: |
-          echo "## 🔄 Rollback Complete" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔄 Rollback Complete（$SHARD_LABEL）" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- ❌ Deleted: **${{ steps.get_tag.outputs.tag }}**" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ Current: **${{ steps.result.outputs.previous_tag || 'None' }}**" >> $GITHUB_STEP_SUMMARY

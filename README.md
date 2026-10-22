@@ -104,7 +104,7 @@ wallpaper-gallery-workflow/
 
 ```bash
 curl -X POST \
-  -H "Authorization: token YOUR_PAT_TOKEN" \
+  -H "Authorization: token YOUR_REPO_TOKEN" \
   -H "Accept: application/vnd.github.v3+json" \
   https://api.github.com/repos/mkmkgo/wallpaper-gallery-workflow/dispatches \
   -d '{"event_type":"process-wallpapers","client_payload":{"message":"feat: 新增壁纸","publisher":"username"}}'
@@ -118,7 +118,7 @@ curl -X POST \
 
 | Secret | 说明 |
 |--------|------|
-| `PAT_TOKEN` | GitHub Personal Access Token，需要 `repo` 权限 |
+| `REPO_TOKEN` | GitHub Personal Access Token，需要 `repo` 权限（代码里用的是 `secrets.REPO_TOKEN`，名字必须一致） |
 
 ### 创建 PAT Token
 

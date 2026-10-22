@@ -2,43 +2,123 @@ name: Process Wallpapers
 
 on:
   repository_dispatch:
-    types: [process-wallpapers]
+    types:
+      - process-wallpapers
+      - process-wallpapers-desktop
+      # 新增第 3/4/5 个分仓：这里加一行 dispatch type，
+      # 再到下面「Resolve shard config」复制一个 case、改 5 行配置即可。
   workflow_dispatch:
     inputs:
+      shard:
+        description: '分片 ID（main / desktop）'
+        required: false
+        default: 'main'
       commit_message:
         description: '提交信息'
         required: false
         default: 'chore: update wallpapers'
 
 # P0 修复：并发控制 - 防止多个工作流同时处理相同文件
+# 按分片分组：不同分仓可并行，同一分仓串行排队（避免并发 push / release 限流）
 concurrency:
-  group: process-wallpapers
+  group: process-wallpapers-${{ github.event.action || github.event.inputs.shard || 'main' }}
   cancel-in-progress: false  # 不取消正在运行的，排队执行
-
-env:
-  IMAGE_REPO: mkmkgo/nuanXinProPic
 
 jobs:
   process:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout workflow repo
         uses: actions/checkout@v4
-      
+
+      # ------------------------------------------------------------------
+      # 分片路由：唯一需要按分仓改动的地方。
+      # repository_dispatch 用 github.event.action 分派，workflow_dispatch 用 inputs.shard。
+      # 产出的变量同时写 $GITHUB_ENV（后续步骤的 shell 用 $VAR）
+      # 和 $GITHUB_OUTPUT（YAML 表达式用 steps.shard.outputs.*）。
+      # ------------------------------------------------------------------
+      - name: Resolve shard config
+        id: shard
+        run: |
+          SHARD="${{ github.event.action || github.event.inputs.shard }}"
+          echo "🔀 Shard: $SHARD"
+
+          # 所有分仓统一 checkout 到 images/，消灭脚本参数里的路径硬编码
+          REPO_DIR="images"
+
+          case "$SHARD" in
+            process-wallpapers|main)
+              REPO_SLUG="mkmkgo/nuanXinProPic"
+              SERIES_WHITELIST="mobile,avatar"
+              SERIES_REPO_MAP=""
+              TAG_MAJOR=""
+              SHARD_LABEL="主仓"
+              ;;
+            process-wallpapers-desktop|desktop)
+              # TAG_MAJOR=2 必须保留：该仓的 tag 从 v2.0.0 起编号，改动会导致串号
+              REPO_SLUG="mkmkgo/nuanXinProPic-desktop"
+              SERIES_WHITELIST="desktop"
+              SERIES_REPO_MAP="desktop=nuanXinProPic-desktop"
+              TAG_MAJOR="2"
+              SHARD_LABEL="桌面壁纸仓"
+              ;;
+            # ----------------------------------------------------------------
+            # 新建第 3/4/5 个仓：复制上面任意一个 case，改这 5 行即可。
+            # 注意：不要给新仓设置 TAG_MAJOR（保持空，走 v1.0.x）——
+            #   1) CDN URL 形如 /gh/mkmkgo/<repo>@<tag>，tag 只需在本仓内唯一，
+            #      跨仓重号完全无害；
+            #   2) create-tag.sh:173 有 minor>=10 → major+1 的进位逻辑，
+            #      设 TAG_MAJOR=3 在约 1000 次 patch 后会跳到 v3.x，
+            #      与后续新仓的号段撞车。
+            # ----------------------------------------------------------------
+            *)
+              echo "❌ Unknown shard: $SHARD" >&2
+              exit 1
+              ;;
+          esac
+
+          # 无 owner 的仓库名：CDN URL / SERIES_REPO_MAP / warmup 用的是这个
+          REPO_NAME="${REPO_SLUG#*/}"
+
+          # 写入 $GITHUB_ENV：后续步骤的 shell 直接用 $REPO_DIR / $TAG_MAJOR / $SERIES_*
+          {
+            echo "REPO_SLUG=$REPO_SLUG"
+            echo "REPO_NAME=$REPO_NAME"
+            echo "REPO_DIR=$REPO_DIR"
+            echo "SERIES_WHITELIST=$SERIES_WHITELIST"
+            echo "SERIES_REPO_MAP=$SERIES_REPO_MAP"
+            echo "TAG_MAJOR=$TAG_MAJOR"
+            echo "SHARD_LABEL=$SHARD_LABEL"
+          } >> "$GITHUB_ENV"
+
+          # 同时写入 $GITHUB_OUTPUT：YAML 表达式（steps.*.with / env:）读不到 shell 变量，
+          # 且用 ${{ env.X }} 自引用同名变量有风险，统一走 steps.shard.outputs.*
+          {
+            echo "repo_slug=$REPO_SLUG"
+            echo "repo_name=$REPO_NAME"
+            echo "repo_dir=$REPO_DIR"
+            echo "series_whitelist=$SERIES_WHITELIST"
+            echo "series_repo_map=$SERIES_REPO_MAP"
+            echo "tag_major=$TAG_MAJOR"
+            echo "shard_label=$SHARD_LABEL"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "✅ $SHARD_LABEL → $REPO_SLUG (dir: $REPO_DIR)"
+
       - name: Checkout image repo
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.IMAGE_REPO }}
+          repository: ${{ steps.shard.outputs.repo_slug }}
           token: ${{ secrets.REPO_TOKEN }}
-          path: nuanXinProPic
+          path: ${{ steps.shard.outputs.repo_dir }}
           fetch-depth: 0
-      
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-      
+
       - name: Install dependencies
         run: |
           # 按需安装 ImageMagick / CJK 字体（部分 runner 未预装）；
@@ -54,16 +134,16 @@ jobs:
             }
           fi
           (command -v magick && magick -version | head -1) || convert -version | head -1
-          
+
           # 配置 ImageMagick 策略
           sudo sed -i 's/<policy domain="resource" name="memory" value="256MiB"\/>/<policy domain="resource" name="memory" value="2GiB"\/>/g' /etc/ImageMagick-6/policy.xml || true
           sudo sed -i 's/<policy domain="resource" name="disk" value="1GiB"\/>/<policy domain="resource" name="disk" value="8GiB"\/>/g' /etc/ImageMagick-6/policy.xml || true
-      
+
       - name: Process new images
         id: process
         run: |
           chmod +x scripts/*.sh
-          ./scripts/process-new-images.sh nuanXinProPic
+          ./scripts/process-new-images.sh "$REPO_DIR"
 
           # 读取处理数量
           if [ -f /tmp/processed_count.txt ]; then
@@ -79,7 +159,7 @@ jobs:
         id: check_metadata
         run: |
           # 检查是否有待处理的 metadata-pending 文件
-          PENDING_DIR="nuanXinProPic/metadata-pending"
+          PENDING_DIR="$REPO_DIR/metadata-pending"
           if [ -d "$PENDING_DIR" ] && [ "$(ls -A $PENDING_DIR/*.json 2>/dev/null | wc -l)" -gt 0 ]; then
             echo "has_pending=true" >> $GITHUB_OUTPUT
           else
@@ -95,28 +175,30 @@ jobs:
           elif [ -n "${{ github.event.client_payload.message }}" ]; then
             MSG="${{ github.event.client_payload.message }}"
           else
-            MSG="chore: 处理 ${{ steps.process.outputs.count }} 张新图片"
+            MSG="chore: 处理 ${{ steps.process.outputs.count }} 张新图片（$SHARD_LABEL）"
           fi
 
           # 第一步：提交缩略图/预览图，创建并推送 tag
-          ./scripts/create-tag.sh nuanXinProPic "$MSG"
-
+          # TAG_MAJOR 由分片配置注入（主仓为空 → v1.x，desktop 为 2 → v2.x）
+          ./scripts/create-tag.sh "$REPO_DIR" "$MSG"
 
       - name: Warmup CDN cache for new images
         if: steps.process.outputs.has_new == 'true'
         run: |
-          NEW_TAG=$(cat /tmp/new_tag.txt)
+          # 这几个变量在 run 里 export：CDN_VERSION 依赖本步才拿到的 new_tag，
+          # 写在 step 级 env: 里不会被 shell 展开（会变成字面量 "$NEW_TAG"）
+          export CDN_VERSION=$(cat /tmp/new_tag.txt)
+          export IMAGE_REPO_PATH="./$REPO_DIR"
+          export IMAGE_REPO_SLUG="$REPO_NAME"
           node scripts/warmup-cdn-images.js
-        env:
-          CDN_VERSION: $NEW_TAG
-          IMAGE_REPO_PATH: ./nuanXinProPic
+
       - name: Update timestamps
         if: steps.process.outputs.has_new == 'true'
         run: |
           # 第二步：用新 tag 更新时间戳文件
           # 读取刚创建的 tag
           NEW_TAG=$(cat /tmp/new_tag.txt)
-          ./scripts/update-timestamps.sh nuanXinProPic "$NEW_TAG"
+          ./scripts/update-timestamps.sh "$REPO_DIR" "$NEW_TAG"
 
       - name: Verify timestamps
         if: steps.process.outputs.has_new == 'true'
@@ -124,25 +206,24 @@ jobs:
         run: |
           # 第三步：校验数据一致性，用新 tag 修复遗漏
           NEW_TAG=$(cat /tmp/new_tag.txt)
-          ./scripts/verify-timestamps.sh nuanXinProPic --fix "$NEW_TAG" || true
+          ./scripts/verify-timestamps.sh "$REPO_DIR" --fix "$NEW_TAG" || true
 
       - name: Verify data integrity
         if: steps.process.outputs.has_new == 'true' || steps.check_metadata.outputs.has_pending == 'true'
         continue-on-error: true
         run: |
           # P0 修复：数据完整性验证
-          ./scripts/verify-integrity.sh nuanXinProPic || true
+          ./scripts/verify-integrity.sh "$REPO_DIR" || true
 
       - name: Process metadata-pending
         id: metadata
         if: steps.process.outputs.has_new == 'true' || steps.check_metadata.outputs.has_pending == 'true'
-        env:
-          # [LOCAL] 分仓后主仓只处理 mobile/avatar；desktop 已迁至 nuanXinProPic-desktop
-          SERIES_WHITELIST: mobile,avatar
         run: |
+          # SERIES_WHITELIST / SERIES_REPO_MAP 由分片配置经 $GITHUB_ENV 注入：
+          # 主仓只处理 mobile/avatar，desktop 分仓只处理 desktop
           # 在 tag 创建之后处理 metadata，确保使用正确的新 tag
           NEW_TAG=$(cat /tmp/new_tag.txt)
-          node scripts/process-metadata.js nuanXinProPic "$NEW_TAG"
+          node scripts/process-metadata.js "$REPO_DIR" "$NEW_TAG"
 
           # 读取metadata处理数量
           if [ -f /tmp/metadata_processed.txt ]; then
@@ -167,18 +248,18 @@ jobs:
           else
             IMG_COUNT="${{ steps.process.outputs.count }}"
             META_COUNT="${{ steps.metadata.outputs.meta_count }}"
-            MSG="chore: 处理 ${IMG_COUNT} 张新图片, ${META_COUNT} 条元数据"
+            MSG="chore: 处理 ${IMG_COUNT} 张新图片, ${META_COUNT} 条元数据（$SHARD_LABEL）"
           fi
 
           # 获取发布者
           PUBLISHER="${{ github.event.client_payload.publisher }}"
 
           # 第三步：更新 stats.json，提交，发布 release
-          ./scripts/publish-release.sh nuanXinProPic "$MSG" "$PUBLISHER"
+          ./scripts/publish-release.sh "$REPO_DIR" "$MSG" "$PUBLISHER"
 
       - name: Summary
         run: |
-          echo "## 🎉 Workflow Complete" >> $GITHUB_STEP_SUMMARY
+          echo "## 🎉 Workflow Complete（$SHARD_LABEL）" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           if [ "${{ steps.process.outputs.has_new }}" == "true" ]; then
@@ -195,15 +276,15 @@ jobs:
             echo "- ✅ Created release" >> $GITHUB_STEP_SUMMARY
           fi
 
-      - name: Trigger nuanXinProPic sync
+      - name: Trigger sync
         if: steps.process.outputs.has_new == 'true' || steps.metadata.outputs.has_metadata == 'true'
         env:
           GH_TOKEN: ${{ secrets.REPO_TOKEN }}
         run: |
-          echo "🔄 Triggering nuanXinProPic Sync All Wallpapers..."
+          echo "🔄 Triggering $REPO_SLUG Sync All Wallpapers..."
           curl -s -X POST \
             -H "Authorization: token $GH_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/repos/mkmkgo/nuanXinProPic/dispatches \
+            "https://api.github.com/repos/$REPO_SLUG/dispatches" \
             -d '{"event_type":"sync-wallpapers"}'
-          echo "✅ Dispatch event sent to nuanXinProPic"
+          echo "✅ Dispatch event sent to $REPO_SLUG"
