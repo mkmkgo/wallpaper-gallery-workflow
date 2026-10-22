@@ -136,6 +136,9 @@ jobs:
       - name: Process metadata-pending
         id: metadata
         if: steps.process.outputs.has_new == 'true' || steps.check_metadata.outputs.has_pending == 'true'
+        env:
+          # [LOCAL] 分仓后主仓只处理 mobile/avatar；desktop 已迁至 nuanXinProPic-desktop
+          SERIES_WHITELIST: mobile,avatar
         run: |
           # 在 tag 创建之后处理 metadata，确保使用正确的新 tag
           NEW_TAG=$(cat /tmp/new_tag.txt)

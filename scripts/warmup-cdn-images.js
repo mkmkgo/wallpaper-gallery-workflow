@@ -6,6 +6,8 @@ const PRIMARY_CDN = CDN_DOMAINS[0]
 
 const CDN_VERSION = process.env.CDN_VERSION
 const IMAGE_REPO_PATH = process.env.IMAGE_REPO_PATH || './nuanXinProPic'
+// [LOCAL] 图床分仓：允许覆盖仓库 slug，桌面分仓传 nuanXinProPic-desktop
+const IMAGE_REPO_SLUG = process.env.IMAGE_REPO_SLUG || 'nuanXinProPic'
 
 const CONCURRENCY = 8
 const WARMUP_TIMEOUT = 15000
@@ -87,7 +89,7 @@ async function main() {
     return
   }
 
-  const CDN_BASE = `https://${PRIMARY_CDN}/gh/mkmkgo/nuanXinProPic@${CDN_VERSION}`
+  const CDN_BASE = `https://${PRIMARY_CDN}/gh/mkmkgo/${IMAGE_REPO_SLUG}@${CDN_VERSION}`
 
   console.log(`\n🔥 CDN Image Warmup (wallpaper-gallery-workflow)`)
   console.log(`   CDN Version: ${CDN_VERSION}`)

@@ -44,6 +44,19 @@ const CHAR_MAP_ENCODE = {
 const VERSION_PREFIX = 'v1.'
 const LATEST_SLICE_SIZE = 40
 
+// [LOCAL] 分仓：series→仓库 映射（如 desktop=nuanXinProPic-desktop），
+// 给每条前端数据写入 repo 字段，前端按条目 O(1) 路由到不同仓，支持无损扩建 N 个分仓。
+const SERIES_REPO_MAP = (() => {
+  const map = {}
+  for (const pair of (process.env.SERIES_REPO_MAP || '').split(',')) {
+    const [k, v] = pair.split('=')
+    if (k && v) map[k.trim()] = v.trim()
+  }
+  return map
+})()
+// [LOCAL] 分仓迁移：强制把本次生成的所有条目 cdnTag 顶到指定值（如 desktop 迁仓后统一 v2.0.0）
+const FORCE_CDN_TAG = process.env.FORCE_CDN_TAG || ''
+
 function compareWallpapers(a, b) {
   const dateDiff = new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
   if (dateDiff !== 0) {
@@ -438,7 +451,8 @@ function generateFrontendData(metadataMap, dataDir, newTag) {
         format: (data.format || 'jpg').toUpperCase(),
         createdAt: data.createdAt,
         sha: '',
-        cdnTag: data.cdnTag || newTag,
+        cdnTag: FORCE_CDN_TAG || data.cdnTag || newTag,
+        repo: SERIES_REPO_MAP[series] || 'nuanXinProPic',
         // AI 扩展字段
         keywords: data.ai?.keywords || [],
         description: data.ai?.description || '',
@@ -662,6 +676,17 @@ async function main() {
     desktop: loadMetadata(path.join(metadataDir, 'desktop.json')),
     mobile: loadMetadata(path.join(metadataDir, 'mobile.json')),
     avatar: loadMetadata(path.join(metadataDir, 'avatar.json'))
+  }
+
+  // [LOCAL] 分仓支持：仅处理白名单内的系列。desktop 分仓仓库只跑 desktop，
+  // 避免把空的 mobile/avatar 数据写进分仓仓库的 data/ 目录。
+  const SERIES_WHITELIST = (process.env.SERIES_WHITELIST || '').split(',').map(s => s.trim()).filter(Boolean)
+  if (SERIES_WHITELIST.length > 0) {
+    for (const key of Object.keys(metadataMap)) {
+      if (!SERIES_WHITELIST.includes(key)) {
+        delete metadataMap[key]
+      }
+    }
   }
 
   let totalProcessed = 0

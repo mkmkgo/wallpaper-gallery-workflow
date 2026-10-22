@@ -149,12 +149,22 @@ main() {
     fi
 
     # 计算新版本号（patch 满 100 进位 minor，minor 满 10 进位 major）
+    # [LOCAL] 支持 TAG_MAJOR 环境变量：分仓仓库（如 desktop）从 v2.0.0 起独立编号，
+    # 避免与主仓 v1.x 冲突。未设置时沿用主仓逻辑（v1.x）。
     local new_tag=""
+    local tag_major="${TAG_MAJOR:-}"
     if [ -z "$latest_tag" ]; then
-        new_tag="v1.0.1"
+        if [ -n "$tag_major" ]; then
+            new_tag="v${tag_major}.0.0"
+        else
+            new_tag="v1.0.1"
+        fi
     else
         local version=${latest_tag#v}
         IFS='.' read -r major minor patch <<< "$version"
+        if [ -n "$tag_major" ]; then
+            major="$tag_major"
+        fi
         local new_patch=$((patch + 1))
         if [ "$new_patch" -ge 100 ]; then
             new_patch=0

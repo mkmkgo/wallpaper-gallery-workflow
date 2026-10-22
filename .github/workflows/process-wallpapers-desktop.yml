@@ -1,0 +1,181 @@
+name: Process Wallpapers (Desktop Shard)
+
+on:
+  repository_dispatch:
+    types: [process-wallpapers-desktop]
+  workflow_dispatch:
+    inputs:
+      commit_message:
+        description: '提交信息'
+        required: false
+        default: 'chore: update desktop wallpapers'
+
+# [LOCAL] 桌面壁纸分仓专用工作流：只处理 nuanXinProPic-desktop 仓库的 desktop 系列，
+# 版本号从 v2.0.0 起独立编号（TAG_MAJOR=2），避免与主仓 v1.x 冲突。
+concurrency:
+  group: process-wallpapers-desktop
+  cancel-in-progress: false
+
+env:
+  IMAGE_REPO: mkmkgo/nuanXinProPic-desktop
+  TAG_MAJOR: '2'
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout workflow repo
+        uses: actions/checkout@v4
+
+      - name: Checkout desktop shard repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IMAGE_REPO }}
+          token: ${{ secrets.REPO_TOKEN }}
+          path: nuanXinProPic-desktop
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          MISSING=""
+          command -v magick >/dev/null 2>&1 || command -v convert >/dev/null 2>&1 || MISSING="imagemagick"
+          dpkg -s fonts-noto-cjk >/dev/null 2>&1 || MISSING="$MISSING fonts-noto-cjk"
+          if [ -n "$MISSING" ]; then
+            echo "安装缺失依赖:$MISSING"
+            sudo apt-get install -y $MISSING || {
+              sudo apt-get update && sudo apt-get install -y $MISSING
+            }
+          fi
+          (command -v magick && magick -version | head -1) || convert -version | head -1
+          sudo sed -i 's/<policy domain="resource" name="memory" value="256MiB"\/>/<policy domain="resource" name="memory" value="2GiB"\/>/g' /etc/ImageMagick-6/policy.xml || true
+          sudo sed -i 's/<policy domain="resource" name="disk" value="1GiB"\/>/<policy domain="resource" name="disk" value="8GiB"\/>/g' /etc/ImageMagick-6/policy.xml || true
+
+      - name: Process new images
+        id: process
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/process-new-images.sh nuanXinProPic-desktop
+          if [ -f /tmp/processed_count.txt ]; then
+            COUNT=$(cat /tmp/processed_count.txt)
+            echo "count=$COUNT" >> $GITHUB_OUTPUT
+            [ "$COUNT" -gt 0 ] && echo "has_new=true" >> $GITHUB_OUTPUT || echo "has_new=false" >> $GITHUB_OUTPUT
+          else
+            echo "count=0" >> $GITHUB_OUTPUT
+            echo "has_new=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check pending metadata
+        id: check_metadata
+        run: |
+          PENDING_DIR="nuanXinProPic-desktop/metadata-pending"
+          if [ -d "$PENDING_DIR" ] && [ "$(ls -A $PENDING_DIR/*.json 2>/dev/null | wc -l)" -gt 0 ]; then
+            echo "has_pending=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_pending=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create tag
+        if: steps.process.outputs.has_new == 'true' || steps.check_metadata.outputs.has_pending == 'true'
+        env:
+          TAG_MAJOR: ${{ env.TAG_MAJOR }}
+        run: |
+          if [ -n "${{ github.event.inputs.commit_message }}" ]; then
+            MSG="${{ github.event.inputs.commit_message }}"
+          elif [ -n "${{ github.event.client_payload.message }}" ]; then
+            MSG="${{ github.event.client_payload.message }}"
+          else
+            MSG="chore: 处理 ${{ steps.process.outputs.count }} 张桌面新图片"
+          fi
+          ./scripts/create-tag.sh nuanXinProPic-desktop "$MSG"
+
+      - name: Warmup CDN cache for new images
+        if: steps.process.outputs.has_new == 'true'
+        run: |
+          NEW_TAG=$(cat /tmp/new_tag.txt)
+          node scripts/warmup-cdn-images.js
+        env:
+          CDN_VERSION: $NEW_TAG
+          IMAGE_REPO_PATH: ./nuanXinProPic-desktop
+          IMAGE_REPO_SLUG: nuanXinProPic-desktop
+
+      - name: Update timestamps
+        if: steps.process.outputs.has_new == 'true'
+        run: |
+          NEW_TAG=$(cat /tmp/new_tag.txt)
+          ./scripts/update-timestamps.sh nuanXinProPic-desktop "$NEW_TAG"
+
+      - name: Verify timestamps
+        if: steps.process.outputs.has_new == 'true'
+        continue-on-error: true
+        run: |
+          NEW_TAG=$(cat /tmp/new_tag.txt)
+          ./scripts/verify-timestamps.sh nuanXinProPic-desktop --fix "$NEW_TAG" || true
+
+      - name: Verify data integrity
+        if: steps.process.outputs.has_new == 'true' || steps.check_metadata.outputs.has_pending == 'true'
+        continue-on-error: true
+        run: |
+          ./scripts/verify-integrity.sh nuanXinProPic-desktop || true
+
+      - name: Process metadata-pending
+        id: metadata
+        if: steps.process.outputs.has_new == 'true' || steps.check_metadata.outputs.has_pending == 'true'
+        env:
+          SERIES_WHITELIST: desktop
+          SERIES_REPO_MAP: desktop=nuanXinProPic-desktop
+        run: |
+          NEW_TAG=$(cat /tmp/new_tag.txt)
+          node scripts/process-metadata.js nuanXinProPic-desktop "$NEW_TAG"
+          if [ -f /tmp/metadata_processed.txt ]; then
+            META_COUNT=$(cat /tmp/metadata_processed.txt)
+            echo "meta_count=$META_COUNT" >> $GITHUB_OUTPUT
+            [ "$META_COUNT" -gt 0 ] && echo "has_metadata=true" >> $GITHUB_OUTPUT || echo "has_metadata=false" >> $GITHUB_OUTPUT
+          else
+            echo "meta_count=0" >> $GITHUB_OUTPUT
+            echo "has_metadata=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Publish release
+        if: steps.process.outputs.has_new == 'true' || steps.metadata.outputs.has_metadata == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.REPO_TOKEN }}
+        run: |
+          if [ -n "${{ github.event.inputs.commit_message }}" ]; then
+            MSG="${{ github.event.inputs.commit_message }}"
+          elif [ -n "${{ github.event.client_payload.message }}" ]; then
+            MSG="${{ github.event.client_payload.message }}"
+          else
+            IMG_COUNT="${{ steps.process.outputs.count }}"
+            META_COUNT="${{ steps.metadata.outputs.meta_count }}"
+            MSG="chore: 处理 ${IMG_COUNT} 张桌面新图片, ${META_COUNT} 条元数据"
+          fi
+          PUBLISHER="${{ github.event.client_payload.publisher }}"
+          ./scripts/publish-release.sh nuanXinProPic-desktop "$MSG" "$PUBLISHER"
+
+      - name: Summary
+        run: |
+          echo "## 🎉 Desktop Shard Workflow Complete" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.process.outputs.has_new }}" == "true" ]; then
+            echo "- ✅ Processed **${{ steps.process.outputs.count }}** new desktop images" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ℹ️ No new desktop images to process" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Trigger desktop shard sync
+        if: steps.process.outputs.has_new == 'true' || steps.metadata.outputs.has_metadata == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.REPO_TOKEN }}
+        run: |
+          echo "🔄 Triggering nuanXinProPic-desktop Sync All Wallpapers..."
+          curl -s -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/mkmkgo/nuanXinProPic-desktop/dispatches \
+            -d '{"event_type":"sync-wallpapers"}'
+          echo "✅ Dispatch event sent to nuanXinProPic-desktop"
