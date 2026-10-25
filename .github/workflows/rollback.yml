@@ -117,3 +117,17 @@ jobs:
           echo "- ✅ Current: **${{ steps.result.outputs.previous_tag || 'None' }}**" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "⚠️ Note: Bing daily sync data was not affected." >> $GITHUB_STEP_SUMMARY
+
+      # ------------------------------------------------------------------
+      # 回滚后必须通知 gallery 重新部署。
+      # 否则 miniapp/config.json 的 cdnTag 仍指向已删除的 tag，
+      # 而站点 pack 出来的图片 URL 会全部 404 —— 这是回滚场景最危险的静默故障。
+      # ------------------------------------------------------------------
+      - name: Trigger gallery redeploy
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.REPO_TOKEN }}
+          SOURCE: rollback-release
+        run: |
+          export NEW_TAG="${{ steps.result.outputs.previous_tag }}"
+          bash scripts/notify-gallery.sh

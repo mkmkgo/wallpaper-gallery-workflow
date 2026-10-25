@@ -288,3 +288,23 @@ jobs:
             "https://api.github.com/repos/$REPO_SLUG/dispatches" \
             -d '{"event_type":"sync-wallpapers"}'
           echo "✅ Dispatch event sent to $REPO_SLUG"
+
+      # ------------------------------------------------------------------
+      # 实时链路的最后一环：通知 gallery 三站重新部署。
+      # 只有站点重部署，public/miniapp/config.json 的 cdnTag 才会更新为刚发布的
+      # 新 tag，小程序据此远程下发覆盖内置兜底版本号 —— 免去「每次上传都重发小程序」。
+      # 否则只能等 gallery 自己的 schedule（UTC 18:00 ≈ 北京时间凌晨 02:00）。
+      #
+      # 该步骤永不失败（脚本内部 + continue-on-error 双保险）：
+      # 壁纸已处理并发布成功，通知失败不应让 run 标红误导排查。
+      # ------------------------------------------------------------------
+      - name: Trigger gallery redeploy
+        if: steps.process.outputs.has_new == 'true' || steps.metadata.outputs.has_metadata == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.REPO_TOKEN }}
+          SOURCE: process-wallpapers
+        run: |
+          # REPO_NAME / SHARD_LABEL 由「Resolve shard config」经 $GITHUB_ENV 注入
+          export NEW_TAG="$(cat /tmp/new_tag.txt 2>/dev/null || echo '')"
+          bash scripts/notify-gallery.sh
