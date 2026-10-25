@@ -57,6 +57,17 @@ const SERIES_REPO_MAP = (() => {
 // [LOCAL] 分仓迁移：强制把本次生成的所有条目 cdnTag 顶到指定值（如 desktop 迁仓后统一 v2.0.0）
 const FORCE_CDN_TAG = process.env.FORCE_CDN_TAG || ''
 
+// [LOCAL] 合规黑名单（2026-10-25）：「政治」分类全站清除。
+// pending 直传入口 + metadata 历史残留 + 生成后残留文件三重收口，
+// 与 studio category-directory.js / gallery blocklist.js / 小程序 filter.js 保持同一份约定。
+const BLOCKED_CATEGORIES = ['政治']
+function isBlockedCategoryName(name) {
+  return BLOCKED_CATEGORIES.some(blocked => String(name || '').trim() === blocked)
+}
+function isBlockedPath(relativePath) {
+  return BLOCKED_CATEGORIES.some(blocked => String(relativePath || '').includes(blocked))
+}
+
 function compareWallpapers(a, b) {
   const dateDiff = new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
   if (dateDiff !== 0) {
@@ -286,6 +297,12 @@ function processPendingFile(pendingFile, metadataMap, newTag) {
     // 使用 relativePath 作为 key
     const key = image.relativePath
 
+    // [LOCAL] 合规黑名单（2026-10-25）：政治分类 pending 直传入口即拦截，不进 metadata
+    if (isBlockedCategoryName(image.category) || isBlockedPath(key)) {
+      console.warn(`    跳过黑名单分类: ${key}`)
+      continue
+    }
+
     // 检查是否已存在记录
     const existingImage = metadataMap[series].images[key]
     
@@ -414,6 +431,11 @@ function generateFrontendData(metadataMap, dataDir, newTag) {
       const reconciled = reconcileMetadataImagePath(relativePath, data)
       if (reconciled.missing) {
         console.warn(`  跳过缺失原图: ${relativePath}`)
+        continue
+      }
+      // [LOCAL] 合规黑名单（2026-10-25）：metadata 历史残留也不进生成数据
+      if (isBlockedCategoryName(reconciled.imageData?.category) || isBlockedPath(reconciled.relativePath)) {
+        console.warn(`  跳过黑名单分类: ${relativePath}`)
         continue
       }
       reconciledImages[reconciled.relativePath] = reconciled.imageData
@@ -578,6 +600,15 @@ function generateFrontendData(metadataMap, dataDir, newTag) {
       const categoryPath = path.join(seriesDir, `${categoryName}.json`)
       fs.writeFileSync(categoryPath, JSON.stringify(categoryData, null, 2))
       console.log(`  生成 ${series}/${categoryName}.json (${items.length} 张)`)
+    })
+
+    // [LOCAL] 合规黑名单（2026-10-25）：生成器只写不删，需显式清理历史残留的黑名单分类文件
+    BLOCKED_CATEGORIES.forEach((blocked) => {
+      const stalePath = path.join(seriesDir, `${blocked}.json`)
+      if (fs.existsSync(stalePath)) {
+        fs.unlinkSync(stalePath)
+        console.log(`  🗑️ 删除黑名单分类残留 ${series}/${blocked}.json`)
+      }
     })
 
     // 同时生成传统单文件格式（向后兼容）
