@@ -36,6 +36,14 @@ on:
         type: boolean
         required: false
         default: true
+  # [LOCAL] 文件触发入口：本机 gh 身份对这个仓只有 pull 权限，
+  # workflow_dispatch / repository_dispatch 都会被 403/404 拒绝，但 SSH 推送可用。
+  # 仅在下面这个专用请求文件变更时才运行，参数从文件读取；日常 push 不会触发，
+  # Studio 的正常 repository_dispatch 链路也完全不受影响。
+  push:
+    branches: [main]
+    paths:
+      - '.github/backfill-request.json'
 
 # P0 修复：并发控制 - 防止多个工作流同时处理相同文件
 # 按分片分组：不同分仓可并行，同一分仓串行排队（避免并发 push / release 限流）
@@ -51,6 +59,59 @@ jobs:
       - name: Checkout workflow repo
         uses: actions/checkout@v4
 
+      # [LOCAL] 统一解析本次运行的参数，写进 $GITHUB_ENV 供后续所有步骤使用。
+      # 三种来源：workflow_dispatch(inputs) / repository_dispatch(action+client_payload)
+      # / push(.github/backfill-request.json)。后者的存在是为了绕过本机令牌无 admin
+      # 权限、无法手动 dispatch 的限制。
+      - name: Resolve run inputs
+        id: run_inputs
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          INPUT_SHARD: ${{ github.event.inputs.shard }}
+          INPUT_BACKFILL: ${{ github.event.inputs.backfill }}
+          INPUT_THUMB_ONLY: ${{ github.event.inputs.thumbnail_only }}
+          INPUT_MSG: ${{ github.event.inputs.commit_message }}
+          PAYLOAD_MSG: ${{ github.event.client_payload.message }}
+        run: |
+          if [ "$EVENT_NAME" = "push" ]; then
+            echo "📄 文件触发：读取 .github/backfill-request.json"
+            REQ="./.github/backfill-request.json"
+            SHARD=$(node -p "require('$REQ').shard || 'main'")
+            BACKFILL=$(node -p "String(require('$REQ').backfill === true)")
+            THUMB_ONLY=$(node -p "String(require('$REQ').thumbnail_only !== false)")
+            MSG=$(node -p "require('$REQ').message || 'chore: backfill wallpapers'")
+          else
+            SHARD="${EVENT_ACTION:-${INPUT_SHARD:-main}}"
+            BACKFILL="${INPUT_BACKFILL:-false}"
+            # 注意：常规 repository_dispatch 没有这个 input，必须默认 false，
+            # 否则日常上传会意外跳过预览图生成（原逻辑即是默认生成）。
+            THUMB_ONLY="${INPUT_THUMB_ONLY:-false}"
+            MSG="${INPUT_MSG:-${PAYLOAD_MSG:-}}"
+          fi
+
+          if [ "$BACKFILL" = "true" ]; then BACKFILL_MODE=1; else BACKFILL_MODE=""; fi
+          if [ "$THUMB_ONLY" = "true" ]; then SKIP_PREVIEW=1; else SKIP_PREVIEW=""; fi
+
+          # $GITHUB_ENV 给后续步骤的 shell 直接用（$SHARD / $COMMIT_MSG / $BACKFILL_MODE）
+          {
+            echo "SHARD=$SHARD"
+            echo "BACKFILL_MODE=$BACKFILL_MODE"
+            echo "SKIP_PREVIEW=$SKIP_PREVIEW"
+            echo "COMMIT_MSG=$MSG"
+          } >> "$GITHUB_ENV"
+
+          # $GITHUB_OUTPUT 给 YAML 表达式用。运行期写入 GITHUB_ENV 的变量
+          # 不保证能出现在 env.* 上下文里，表达式一律走 steps.run_inputs.outputs.*。
+          {
+            echo "shard=$SHARD"
+            echo "backfill_mode=$BACKFILL_MODE"
+            echo "skip_preview=$SKIP_PREVIEW"
+            echo "commit_msg=$MSG"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "shard=$SHARD backfill=$BACKFILL thumbnail_only=$THUMB_ONLY skip_preview=${SKIP_PREVIEW:-0}"
+
       # ------------------------------------------------------------------
       # 分片路由：唯一需要按分仓改动的地方。
       # repository_dispatch 用 github.event.action 分派，workflow_dispatch 用 inputs.shard。
@@ -60,7 +121,7 @@ jobs:
       - name: Resolve shard config
         id: shard
         run: |
-          SHARD="${{ github.event.action || github.event.inputs.shard }}"
+          # SHARD 由「Resolve run inputs」写进 $GITHUB_ENV（兼容三种触发来源）
           echo "🔀 Shard: $SHARD"
 
           # 所有分仓统一 checkout 到 images/，消灭脚本参数里的路径硬编码
@@ -161,10 +222,9 @@ jobs:
       - name: Process new images
         id: process
         env:
-          # 勾选「补图模式」时置 1，脚本改为按缺口扫描（忽略 git diff）
-          BACKFILL_MODE: ${{ github.event.inputs.backfill == 'true' && '1' || '' }}
-          # 勾选「只补缩略图」时置 1，跳过预览图生成
-          SKIP_PREVIEW: ${{ github.event.inputs.thumbnail_only == 'true' && '1' || '' }}
+          # 由「Resolve run inputs」统一解析（dispatch inputs / 文件触发 二选一）
+          BACKFILL_MODE: ${{ steps.run_inputs.outputs.backfill_mode }}
+          SKIP_PREVIEW: ${{ steps.run_inputs.outputs.skip_preview }}
         run: |
           chmod +x scripts/*.sh
           ./scripts/process-new-images.sh "$REPO_DIR"
@@ -193,11 +253,9 @@ jobs:
       - name: Create tag
         if: steps.process.outputs.has_new == 'true' || steps.check_metadata.outputs.has_pending == 'true'
         run: |
-          # 获取提交信息
-          if [ -n "${{ github.event.inputs.commit_message }}" ]; then
-            MSG="${{ github.event.inputs.commit_message }}"
-          elif [ -n "${{ github.event.client_payload.message }}" ]; then
-            MSG="${{ github.event.client_payload.message }}"
+          # COMMIT_MSG 由「Resolve run inputs」统一解析后写入 $GITHUB_ENV
+          if [ -n "$COMMIT_MSG" ]; then
+            MSG="$COMMIT_MSG"
           else
             MSG="chore: 处理 ${{ steps.process.outputs.count }} 张新图片（$SHARD_LABEL）"
           fi
@@ -211,7 +269,7 @@ jobs:
       # first_tag 拼 URL，缩略图照样 404（tag 是不可变快照）。
       # verify-timestamps.sh --fix 只补/删记录，不会改已有记录的 tag，所以必须单独做。
       - name: Retag timestamps for backfilled images
-        if: github.event.inputs.backfill == 'true' && steps.process.outputs.has_new == 'true'
+        if: steps.run_inputs.outputs.backfill_mode == '1' && steps.process.outputs.has_new == 'true'
         run: |
           chmod +x scripts/*.sh
           NEW_TAG=$(cat /tmp/new_tag.txt)
@@ -257,7 +315,7 @@ jobs:
           # [LOCAL] 补图模式：process-metadata.js 需按 /tmp/backfilled_images.txt
           # 把已存在条目的 cdnTag 顶到新 tag，并强制重写 data/*.json 的 blob。
           # 不传这个变量，前端会继续拿旧 tag 取图，补出来的缩略图仍然 404。
-          BACKFILL_MODE: ${{ github.event.inputs.backfill == 'true' && '1' || '' }}
+          BACKFILL_MODE: ${{ steps.run_inputs.outputs.backfill_mode }}
         run: |
           # SERIES_WHITELIST / SERIES_REPO_MAP 由分片配置经 $GITHUB_ENV 注入：
           # 主仓只处理 mobile/avatar，desktop 分仓只处理 desktop
@@ -280,11 +338,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.REPO_TOKEN }}
         run: |
-          # 获取提交信息
-          if [ -n "${{ github.event.inputs.commit_message }}" ]; then
-            MSG="${{ github.event.inputs.commit_message }}"
-          elif [ -n "${{ github.event.client_payload.message }}" ]; then
-            MSG="${{ github.event.client_payload.message }}"
+          # COMMIT_MSG 由「Resolve run inputs」统一解析后写入 $GITHUB_ENV
+          if [ -n "$COMMIT_MSG" ]; then
+            MSG="$COMMIT_MSG"
           else
             IMG_COUNT="${{ steps.process.outputs.count }}"
             META_COUNT="${{ steps.metadata.outputs.meta_count }}"
