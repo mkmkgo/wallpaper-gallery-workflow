@@ -1,7 +1,12 @@
 import process from 'node:process'
 import { execSync } from 'node:child_process'
 
-const CDN_DOMAINS = ['cdn.jsdmirror.com', 'testingcf.jsdelivr.net', 'cdn.jsdelivr.net']
+// [LOCAL] 线上实际取图域名是自有备案域名 img.202486.xyz（EdgeOne 国内版，回源 jsdmirror）。
+// 上游写死 cdn.jsdmirror.com，等于把新图预热到一个用户根本不会访问的域名上：
+// 真实用户的首次请求依旧是冷启动，而且在国内还可能直接超时。
+// 可用 WARMUP_CDN_DOMAIN 覆盖，便于换域名或临时对比。
+const WARMUP_CDN_DOMAIN = process.env.WARMUP_CDN_DOMAIN || 'img.202486.xyz'
+const CDN_DOMAINS = [WARMUP_CDN_DOMAIN, 'cdn.jsdmirror.com', 'testingcf.jsdelivr.net', 'cdn.jsdelivr.net']
 const PRIMARY_CDN = CDN_DOMAINS[0]
 
 const CDN_VERSION = process.env.CDN_VERSION

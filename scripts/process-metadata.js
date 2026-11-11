@@ -57,6 +57,15 @@ const SERIES_REPO_MAP = (() => {
 // [LOCAL] 分仓迁移：强制把本次生成的所有条目 cdnTag 顶到指定值（如 desktop 迁仓后统一 v2.0.0）
 const FORCE_CDN_TAG = process.env.FORCE_CDN_TAG || ''
 
+// [LOCAL] 补图模式（2026-11-12）：
+// retag-timestamps.sh 会把补齐条目的 first_tag 重写到新 tag，但前端 data/*.json 里的
+// cdnTag 取自 metadata/{series}.json 那份**独立**字段，不是时间戳文件。
+// 而 syncFromTimestamps() 遇到已存在条目直接 continue，processPendingFile() 也只合并 AI 数据，
+// 两者都不会刷新 cdnTag。若不同步改这里，缩略图虽然补出来了，前端仍用旧 tag 拼 URL → 404。
+// BACKFILL_LIST_FILE 由 process-new-images.sh 在补图模式下写出，格式 series|相对路径。
+const BACKFILL_MODE = process.env.BACKFILL_MODE === '1'
+const BACKFILL_LIST_FILE = process.env.BACKFILL_LIST_FILE || '/tmp/backfilled_images.txt'
+
 // [LOCAL] 合规黑名单（2026-10-25）：「政治」分类全站清除。
 // pending 直传入口 + metadata 历史残留 + 生成后残留文件三重收口，
 // 与 studio category-directory.js / gallery blocklist.js / 小程序 filter.js 保持同一份约定。
@@ -664,6 +673,53 @@ function generateFrontendData(metadataMap, dataDir, newTag) {
   return stats
 }
 
+// [LOCAL] 补图模式：把本次补齐条目在 metadata 里的 cdnTag 顶到新 tag。
+// 只动清单命中的条目，绝不整表重写，避免把其它历史条目的 tag 一并改掉。
+function retagBackfilledEntries(metadataMap, newTag) {
+  if (!fs.existsSync(BACKFILL_LIST_FILE))
+    return 0
+
+  const lines = fs.readFileSync(BACKFILL_LIST_FILE, 'utf-8')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+
+  let updated = 0
+  let skipped = 0
+
+  for (const line of lines) {
+    const sep = line.indexOf('|')
+    if (sep < 0) {
+      skipped++
+      continue
+    }
+
+    const series = line.slice(0, sep)
+    const relativePath = line.slice(sep + 1)
+    const bucket = metadataMap[series]
+    if (!bucket || !relativePath) {
+      skipped++
+      continue
+    }
+
+    // metadata 的 key 是带 wallpaper/ 前缀的完整相对路径
+    const key = `wallpaper/${series}/${relativePath}`
+    const entry = bucket.images[key]
+    if (!entry) {
+      skipped++
+      continue
+    }
+
+    if (entry.cdnTag !== newTag) {
+      entry.cdnTag = newTag
+      updated++
+    }
+  }
+
+  console.log(`  清单 ${lines.length} 条 → cdnTag 改写 ${updated} 条，跳过 ${skipped} 条（不在本分片/无记录）`)
+  return updated
+}
+
 // 主函数
 async function main() {
   const args = process.argv.slice(2)
@@ -718,6 +774,15 @@ async function main() {
         delete metadataMap[key]
       }
     }
+  }
+
+  // [LOCAL] 步骤 0：补图模式下先刷新已存在条目的 cdnTag，
+  // 后面的 generateFrontendData() 才会把新 tag 写进 blob 供前端拼 URL。
+  let retagged = 0
+  if (BACKFILL_MODE) {
+    console.log('步骤 0: 同步补图条目的 cdnTag...')
+    retagged = retagBackfilledEntries(metadataMap, newTag)
+    console.log()
   }
 
   let totalProcessed = 0
@@ -780,11 +845,13 @@ async function main() {
   console.log(`共处理 ${totalProcessed} 张图片`)
 
   // 保存更新后的 metadata 并生成前端数据
-  // 条件：有新增图片 OR 强制重新生成
-  if (totalProcessed > 0 || forceRegenerate) {
-    if (forceRegenerate && totalProcessed === 0) {
+  // 条件：有新增图片 OR 强制重新生成 OR 补图模式改过 cdnTag
+  // 最后一项不能漏：补图时可能一张新图都没有，但 data/*.json 必须整体重写，
+  // 否则新 tag 只留在 metadata/{series}.json，前端读的 blob 还是旧 tag。
+  if (totalProcessed > 0 || forceRegenerate || retagged > 0) {
+    if ((forceRegenerate || retagged > 0) && totalProcessed === 0) {
       console.log()
-      console.log('强制重新生成前端数据（metadata 可能已更新）...')
+      console.log('强制重新生成前端数据（metadata / cdnTag 已更新）...')
     }
 
     // 生成前端数据

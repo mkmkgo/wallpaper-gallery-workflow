@@ -87,32 +87,47 @@ get_new_images_by_git() {
 
 # 回退方案：按「缺口」遍历检查（首次、无 tag，或补图模式时使用）
 # 判定标准：原图存在但对应缩略图不存在
+#
+# [LOCAL] 第二个参数 check_preview=1 时，额外把「预览图缺失」的原图也算进缺口。
+# 只在补图模式第二批（SKIP_PREVIEW 未置位）传入：第一批补完缩略图后，
+# 若仍只查缩略图，第二批会扫出 0 张，预览图永远补不上。
+# 日常上传的 git 回退分支不传这个参数，行为与原来完全一致。
 get_new_images_by_scan() {
     local project_root="$1"
+    local check_preview="${2:-0}"
 
     # [LOCAL] 补上 video：早期只扫 desktop/mobile/avatar，视频系列缺图永远查不出来
     for series in desktop mobile avatar video; do
         local wallpaper_dir="$project_root/wallpaper/$series"
         local thumbnail_dir="$project_root/thumbnail/$series"
-        
+        local preview_dir="$project_root/preview/$series"
+
         [ ! -d "$wallpaper_dir" ] && continue
-        
+
         while IFS= read -r -d '' img; do
             local rel_path="${img#$wallpaper_dir/}"
             local filename=$(basename "$img")
             local name="${filename%.*}"
             local dir_path=$(dirname "$rel_path")
-            
+            local need=0
+
             # 检查缩略图是否存在
             if [ "$dir_path" = "." ]; then
                 local thumb_path="$thumbnail_dir/${name}.webp"
+                local prev_path="$preview_dir/${name}.webp"
             else
                 local thumb_path="$thumbnail_dir/$dir_path/${name}.webp"
+                local prev_path="$preview_dir/$dir_path/${name}.webp"
             fi
-            
-            if [ ! -f "$thumb_path" ]; then
-                echo "wallpaper/$series/$rel_path"
+
+            [ ! -f "$thumb_path" ] && need=1
+
+            # avatar 按设计不生成预览图，不能把它算成缺口（否则会白跑 500+ 条）
+            if [ "$need" -eq 0 ] && [ "$check_preview" = "1" ] && [ "$series" != "avatar" ]; then
+                [ ! -f "$prev_path" ] && need=1
             fi
+
+            [ "$need" -eq 1 ] && echo "wallpaper/$series/$rel_path"
         done < <(find "$wallpaper_dir" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.webp" \) -print0)
     done
 }
@@ -271,13 +286,21 @@ main() {
     local seen_files=()
 
     if [ "$backfill_mode" = "1" ]; then
-        echo -e "${YELLOW}  BACKFILL 模式：跳过 git 检测，按缺口扫描全部缺缩略图的原图${NC}"
+        # 第一批（SKIP_PREVIEW=1）只扫缩略图缺口；第二批不跳过预览图时，
+        # 连预览图缺口一起扫，否则第一批补完后第二批会扫出 0 张。
+        local preview_gap_mode=0
+        [ "${SKIP_PREVIEW:-}" != "1" ] && preview_gap_mode=1
+        if [ "$preview_gap_mode" = "1" ]; then
+            echo -e "${YELLOW}  BACKFILL 模式：扫描缩略图 + 预览图缺口（第二批）${NC}"
+        else
+            echo -e "${YELLOW}  BACKFILL 模式：仅扫描缩略图缺口（第一批）${NC}"
+        fi
         while IFS= read -r file; do
             if [ -n "$file" ] && [[ ! " ${seen_files[*]} " =~ " ${file} " ]]; then
                 new_files+=("$file")
                 seen_files+=("$file")
             fi
-        done < <(get_new_images_by_scan "$project_root")
+        done < <(get_new_images_by_scan "$project_root" "$preview_gap_mode")
     else
         while IFS= read -r file; do
             # 去重：检查是否已经添加过

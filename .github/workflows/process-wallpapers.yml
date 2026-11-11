@@ -21,14 +21,18 @@ on:
       # 常规检测基于 git diff（只发现最新 tag 之后新增的文件），这类文件已在旧 tag 内，
       # 对 diff 不可见，必须用缺口扫描。勾选后本次运行会忽略 diff、扫描全部缺口。
       backfill:
-        description: '补图模式：扫描所有缺缩略图的原图并补齐（修复历史遗漏）'
+        description: '补图模式：扫描缺图的历史原图并补齐（修复 git diff 看不见的遗漏）'
         type: boolean
         required: false
         default: false
-      # [LOCAL] 首批建议只补缩略图：缩略图是列表卡片用的，缺它直接退化成拉原图；
-      # 预览图只有详情弹窗用，且单张 100~200KB，2000 张会让单次提交膨胀到 250MB+。
+      # [LOCAL] 两批跑法（顺序不能反）：
+      #   第 1 批 backfill=true + thumbnail_only=true  → 只补约 1490 张缩略图（~20MB），
+      #       列表卡片立刻不再拉原图；并把这些条目的 cdnTag 重打到本次新 tag。
+      #   第 2 批 backfill=true + thumbnail_only=false → 扫描预览图缺口并补齐（~250MB），
+      #       再次重打 cdnTag 到新的 tag（tag 是全仓快照，第 1 批的缩略图也在里面）。
+      # 常规上传请勿勾选 backfill：那会走 git diff，行为与补图模式完全隔离。
       thumbnail_only:
-        description: '只补缩略图，不生成预览图（首批约 20MB，建议先勾）'
+        description: '只补缩略图（第1批勾；第2批取消勾选以补预览图）'
         type: boolean
         required: false
         default: true
@@ -249,6 +253,11 @@ jobs:
       - name: Process metadata-pending
         id: metadata
         if: steps.process.outputs.has_new == 'true' || steps.check_metadata.outputs.has_pending == 'true'
+        env:
+          # [LOCAL] 补图模式：process-metadata.js 需按 /tmp/backfilled_images.txt
+          # 把已存在条目的 cdnTag 顶到新 tag，并强制重写 data/*.json 的 blob。
+          # 不传这个变量，前端会继续拿旧 tag 取图，补出来的缩略图仍然 404。
+          BACKFILL_MODE: ${{ github.event.inputs.backfill == 'true' && '1' || '' }}
         run: |
           # SERIES_WHITELIST / SERIES_REPO_MAP 由分片配置经 $GITHUB_ENV 注入：
           # 主仓只处理 mobile/avatar，desktop 分仓只处理 desktop
