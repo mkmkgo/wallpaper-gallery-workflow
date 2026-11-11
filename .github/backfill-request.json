@@ -1,0 +1,6 @@
+{
+  "shard": "main",
+  "backfill": true,
+  "thumbnail_only": true,
+  "message": "chore: backfill missing thumbnails (batch 1/2)"
+}
