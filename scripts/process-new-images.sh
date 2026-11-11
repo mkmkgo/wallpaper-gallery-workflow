@@ -85,11 +85,13 @@ get_new_images_by_git() {
     cd - > /dev/null
 }
 
-# 回退方案：遍历检查（首次或无 tag 时使用）
+# 回退方案：按「缺口」遍历检查（首次、无 tag，或补图模式时使用）
+# 判定标准：原图存在但对应缩略图不存在
 get_new_images_by_scan() {
     local project_root="$1"
-    
-    for series in desktop mobile avatar; do
+
+    # [LOCAL] 补上 video：早期只扫 desktop/mobile/avatar，视频系列缺图永远查不出来
+    for series in desktop mobile avatar video; do
         local wallpaper_dir="$project_root/wallpaper/$series"
         local thumbnail_dir="$project_root/thumbnail/$series"
         
@@ -197,7 +199,9 @@ process_image() {
     fi
 
     # 生成预览图（无水印，avatar 不需要）
-    if [ "$series" != "avatar" ]; then
+    # [LOCAL] SKIP_PREVIEW=1 时只补缩略图：预览图单张 100~200KB，
+    # 全量补 2000 张会让单次提交膨胀到 250MB+，可分两批推。
+    if [ "$series" != "avatar" ] && [ "${SKIP_PREVIEW:-}" != "1" ]; then
         local preview_width=$PREVIEW_WIDTH
         local preview_quality=$PREVIEW_QUALITY
         if [ "$series" = "mobile" ]; then
@@ -227,6 +231,14 @@ process_image() {
 
 main() {
     local project_root="${1:-.}"
+
+    # [LOCAL] 补图模式：忽略 git diff，直接按「原图有、缩略图没有」的缺口扫描。
+    # 为什么需要它：git diff 只能发现「最新 tag 之后新增」的文件；历史上有一批原图
+    # 已经进了某个旧 tag（文件存在），但对应的 thumbnail/preview 从未生成，
+    # 这类文件对 git diff 不可见，只能靠缺口扫描捞出来。
+    # 触发方式：环境变量 BACKFILL_MODE=1，或第二个参数传 --backfill。
+    local backfill_mode="${BACKFILL_MODE:-}"
+    [ "${2:-}" = "--backfill" ] && backfill_mode=1
 
     [ ! -d "$project_root/wallpaper" ] && {
         echo -e "${RED}错误: 找不到 wallpaper 目录${NC}"
@@ -258,20 +270,30 @@ main() {
     local new_files=()
     local seen_files=()
 
-    while IFS= read -r file; do
-        # 去重：检查是否已经添加过
-        if [ -n "$file" ] && [[ ! " ${seen_files[*]} " =~ " ${file} " ]]; then
-            new_files+=("$file")
-            seen_files+=("$file")
-        fi
-    done < <(get_new_images_by_git "$project_root")
-
-    # 如果 Git 方法没有结果，回退到全量扫描
-    if [ ${#new_files[@]} -eq 0 ]; then
-        echo -e "${YELLOW}  Git 检测无结果，回退到全量扫描${NC}"
+    if [ "$backfill_mode" = "1" ]; then
+        echo -e "${YELLOW}  BACKFILL 模式：跳过 git 检测，按缺口扫描全部缺缩略图的原图${NC}"
         while IFS= read -r file; do
-            [ -n "$file" ] && new_files+=("$file")
+            if [ -n "$file" ] && [[ ! " ${seen_files[*]} " =~ " ${file} " ]]; then
+                new_files+=("$file")
+                seen_files+=("$file")
+            fi
         done < <(get_new_images_by_scan "$project_root")
+    else
+        while IFS= read -r file; do
+            # 去重：检查是否已经添加过
+            if [ -n "$file" ] && [[ ! " ${seen_files[*]} " =~ " ${file} " ]]; then
+                new_files+=("$file")
+                seen_files+=("$file")
+            fi
+        done < <(get_new_images_by_git "$project_root")
+
+        # 如果 Git 方法没有结果，回退到全量扫描
+        if [ ${#new_files[@]} -eq 0 ]; then
+            echo -e "${YELLOW}  Git 检测无结果，回退到全量扫描${NC}"
+            while IFS= read -r file; do
+                [ -n "$file" ] && new_files+=("$file")
+            done < <(get_new_images_by_scan "$project_root")
+        fi
     fi
 
     local count=${#new_files[@]}
@@ -289,14 +311,28 @@ main() {
     # 处理每张图片
     local processed=0
     local success_count=0
+    # [LOCAL] 补图模式：记录本次成功补齐的条目（series|相对路径），
+    # 供后续 retag-timestamps.sh 把这些条目的 cdnTag 改到新 tag —— 否则缩略图
+    # 虽然生成了，前端仍按旧 tag 拼 URL，照样 404。
+    local backfilled_file="/tmp/backfilled_images.txt"
+    [ "$backfill_mode" = "1" ] && : > "$backfilled_file"
+
     for file in "${new_files[@]}"; do
         processed=$((processed + 1))
         echo -e "${BLUE}[$processed/$count]${NC} $file"
         if process_image "$file" "$project_root" "$im_cmd" "$font" "$failed_file"; then
             success_count=$((success_count + 1))
+            if [ "$backfill_mode" = "1" ]; then
+                local rel="${file#wallpaper/}"
+                echo "${rel%%/*}|${rel#*/}" >> "$backfilled_file"
+            fi
         fi
         echo ""
     done
+
+    if [ "$backfill_mode" = "1" ]; then
+        echo -e "${BLUE}补图清单已写入 ${backfilled_file}（$(wc -l < "$backfilled_file" | tr -d ' ') 条）${NC}"
+    fi
 
     # P0 修复：处理失败的图片
     local failed_count=0

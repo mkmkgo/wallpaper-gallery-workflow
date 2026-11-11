@@ -17,6 +17,21 @@ on:
         description: '提交信息'
         required: false
         default: 'chore: update wallpapers'
+      # [LOCAL] 补图模式：修复「原图已入库、缩略图/预览图从未生成」的历史遗漏。
+      # 常规检测基于 git diff（只发现最新 tag 之后新增的文件），这类文件已在旧 tag 内，
+      # 对 diff 不可见，必须用缺口扫描。勾选后本次运行会忽略 diff、扫描全部缺口。
+      backfill:
+        description: '补图模式：扫描所有缺缩略图的原图并补齐（修复历史遗漏）'
+        type: boolean
+        required: false
+        default: false
+      # [LOCAL] 首批建议只补缩略图：缩略图是列表卡片用的，缺它直接退化成拉原图；
+      # 预览图只有详情弹窗用，且单张 100~200KB，2000 张会让单次提交膨胀到 250MB+。
+      thumbnail_only:
+        description: '只补缩略图，不生成预览图（首批约 20MB，建议先勾）'
+        type: boolean
+        required: false
+        default: true
 
 # P0 修复：并发控制 - 防止多个工作流同时处理相同文件
 # 按分片分组：不同分仓可并行，同一分仓串行排队（避免并发 push / release 限流）
@@ -141,6 +156,11 @@ jobs:
 
       - name: Process new images
         id: process
+        env:
+          # 勾选「补图模式」时置 1，脚本改为按缺口扫描（忽略 git diff）
+          BACKFILL_MODE: ${{ github.event.inputs.backfill == 'true' && '1' || '' }}
+          # 勾选「只补缩略图」时置 1，跳过预览图生成
+          SKIP_PREVIEW: ${{ github.event.inputs.thumbnail_only == 'true' && '1' || '' }}
         run: |
           chmod +x scripts/*.sh
           ./scripts/process-new-images.sh "$REPO_DIR"
@@ -181,6 +201,17 @@ jobs:
           # 第一步：提交缩略图/预览图，创建并推送 tag
           # TAG_MAJOR 由分片配置注入（主仓为空 → v1.x，desktop 为 2 → v2.x）
           ./scripts/create-tag.sh "$REPO_DIR" "$MSG"
+
+      # [LOCAL] 补图模式专用：把本次补齐条目的 cdnTag 改到刚创建的新 tag。
+      # 不做这一步的话，缩略图虽然生成并进了新 tag，但前端仍按条目自带的旧
+      # first_tag 拼 URL，缩略图照样 404（tag 是不可变快照）。
+      # verify-timestamps.sh --fix 只补/删记录，不会改已有记录的 tag，所以必须单独做。
+      - name: Retag timestamps for backfilled images
+        if: github.event.inputs.backfill == 'true' && steps.process.outputs.has_new == 'true'
+        run: |
+          chmod +x scripts/*.sh
+          NEW_TAG=$(cat /tmp/new_tag.txt)
+          ./scripts/retag-timestamps.sh "$REPO_DIR" "$NEW_TAG" /tmp/backfilled_images.txt
 
       - name: Warmup CDN cache for new images
         if: steps.process.outputs.has_new == 'true'
